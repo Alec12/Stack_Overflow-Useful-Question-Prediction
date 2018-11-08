@@ -1,0 +1,210 @@
+# Split the Data
+set.seed(123)  # So we get the same results
+spl = sample.split(UltimateTM$Useful, SplitRatio = 0.7)
+
+Train = UltimateTM %>% filter(spl == TRUE)
+Test = UltimateTM %>% filter(spl == FALSE)
+
+tableAccuracy <- function(test, pred) {
+  t = table(test, pred)
+  a = sum(diag(t))/length(test)
+  return(a)
+}
+
+#Baseline Models
+table(Train$Useful)
+2523/(2523+2110) 
+table(Test$Useful)
+1081/(1081+904) 
+
+# Model 1) Cross-Validated CART:
+train.StackCART = train(Useful ~ .,
+                   data = Train,
+                   method = "rpart",
+                   tuneGrid = data.frame(cp=seq(0, 0.4, 0.002)),
+                   trControl = trainControl(method="cv", number=10))
+train.StackCART
+train.StackCART$results
+
+
+ggplot(train.StackCART$results, aes(x = cp, y = Accuracy)) + geom_point(size = 2) + geom_line() + 
+  ylab("CV Accuracy") + theme_bw() + 
+  theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
+
+mod.cart = train.StackCART$finalModel
+prp(mod.cart)
+
+predict.cart = predict(mod.cart, newdata = Test, type = "class") 
+table(Test$Useful, predict.cart)
+tableAccuracy(Test$Useful, predict.cart) 
+
+
+# Model 2) Random Forests:
+#StackRF = randomForest(Score ~ ., mtry= data=Train)
+
+set.seed(234)
+tgrid <- expand.grid(
+  .mtry = 1:20,
+  .splitrule = "gini",
+  .min.node.size = c(10)
+)
+train.StackRF <- train(Useful ~ .,
+                  data = Train,
+                  method = "ranger",
+                  tuneGrid = tgrid,
+                  trControl = trainControl(method="cv", number=5, verboseIter = TRUE),
+                  metric = "Accuracy")
+
+train.StackRF
+train.StackRF$results
+importance(train.StackRF) #ranger-specific
+
+ggplot(train.StackRF$results, aes(x = mtry, y = Accuracy)) + geom_point(size = 2) + geom_line() + 
+  ylab("CV Accuracy") + theme_bw() + 
+  theme(axis.title=element_text(size=18), axis.text=element_text(size=18))
+
+mod.rf = train.StackRF$finalModel
+predict.rf = predict(mod.rf, data = Test, type = "response")
+table(Test$Useful, predictions(predict.rf))
+tableAccuracy(Test$Useful, predictions(predict.rf)) 
+
+
+# Model 3) Logistic Regression:
+
+train.StackLOG = glm(Useful ~ ., data = Train, family = "binomial")
+# You may see a warning message - suspicious, but we will just ignore this
+summary(train.StackLOG)
+
+# Predictions on test set
+PredictLog = predict(train.StackLOG, newdata = Test, type = "response")
+table(Test$Useful, PredictLog > 0.5)
+tableAccuracy(Test$Useful, PredictLog > 0.5)
+
+df_log_result = data.frame(PredictLog)
+
+
+# Model 4) LDA Model:
+
+train.StackLDA = lda(Useful ~ ., data = Train)
+
+predict.lda = predict(train.StackLDA, newdata = Test)$class
+predict.lda2 = predict(train.StackLDA, newdata = Test)
+table(Test$Useful, predict.lda)
+tableAccuracy(Test$Useful, predict.lda) #.569773
+
+predTestLDA_probs <- predict.lda2$posterior[,2]
+df_resultLDA = data.frame(predict.lda)
+
+
+
+#ROC CURVES for Log and LDA
+rocr.log.pred <- prediction(PredictLog, Test$Useful)
+logPerformance <- performance(rocr.log.pred, "tpr", "fpr")
+plot(logPerformance, colorize = TRUE)
+abline(0, 1)
+as.numeric(performance(rocr.log.pred, "auc")@y.values)
+
+rocr.lda.pred <- prediction(predTestLDA_probs, Test$Useful)
+ldaPerformance <- performance(rocr.lda.pred, "tpr", "fpr")
+plot(ldaPerformance, colorize = TRUE)
+abline(0, 1)
+as.numeric(performance(rocr.lda.pred, "auc")@y.values)
+plot(logPerformance, col="blue")
+plot(ldaPerformance, col="red", add=TRUE)
+abline(0,1)
+
+# Using the bootstrap to assess the performance of your final model in a way that properly addresses the variability of
+#the relevant performance metrics (accuracy, TPR, and FPR).
+library(boot)
+
+tableAccuracy <- function(label, pred) {
+  t = table(label, pred)
+  a = sum(diag(t))/length(label)
+  return(a)
+}
+
+tableTPR <- function(label, pred) {
+  t = table(label, pred)
+  return(t[2,2]/(t[2,1] + t[2,2]))
+}
+
+tableFPR <- function(label, pred) {
+  t = table(label, pred)
+  return(t[1,2]/(t[1,1] + t[1,2]))
+}
+
+boot_accuracy <- function(data, index) {
+  labels <- data$label[index]
+  predictions <- data$prediction[index]
+  return(tableAccuracy(labels, predictions))
+}
+
+boot_tpr <- function(data, index) {
+  labels <- data$label[index]
+  predictions <- data$prediction[index]
+  return(tableTPR(labels, predictions))
+}
+
+boot_fpr <- function(data, index) {
+  labels <- data$label[index]
+  predictions <- data$prediction[index]
+  return(tableFPR(labels, predictions))
+}
+
+boot_all_metrics <- function(data, index) {
+  acc = boot_accuracy(data, index)
+  tpr = boot_tpr(data, index)
+  fpr = boot_fpr(data, index)
+  return(c(acc, tpr, fpr))
+}
+
+# sanity test
+table(Test$Useful, predictions(predict.rf))
+ranger_df = data.frame(labels = Test$Useful, predictions = predictions(predict.rf))
+boot_accuracy(ranger_df, 1:274)
+boot_tpr(ranger_df, 1:274)
+boot_fpr(ranger_df, 1:274)
+boot_all_metrics(ranger_df, 1:274)
+
+
+
+#### do bootstrap
+
+big_B = 100000
+
+# Logistic
+set.seed(123)
+ranger_boot = boot(ranger_df, boot_all_metrics, R = big_B)
+ranger_boot
+boot.ci(ranger_boot, index = 1, type = "basic")
+boot.ci(ranger_boot, index = 2, type = "basic")
+boot.ci(ranger_boot, index = 3, type = "basic")
+
+
+# get confidence intervals (not manually)
+RF_test_set = data.frame(response = Test$Useful, prediction = predictions(predict.rf), baseline = 2523/(2523+2110))
+
+
+all_metrics(RF_test_set, 1:1985)
+
+set.seed(892)
+RF_boot <- boot(RF_test_set, all_metrics, R = 10000)
+RF_boot
+
+boot.ci(RF_boot, index = 1, type = "basic")
+boot.ci(RF_boot, index = 2, type = "basic")
+boot.ci(RF_boot, index = 3, type = "basic")
+
+# Which model has the lowest false positive rate?
+boot_fpr(ranger_df, 1:274)
+
+
+cart_df = data.frame(labels = Test$Useful, predictions = predict.cart)
+boot_fpr(cart_df, 1:274)
+
+table(Test$Useful, PredictLog > 0.5)
+log_df = data.frame(labels = Test$Useful, predictions = PredictLog > 0.5)
+boot_fpr(log_df, 1:274)
+
+lda_df = data.frame(labels = Test$Useful, predictions = predict.lda)
+boot_fpr(lda_df, 1:274)
