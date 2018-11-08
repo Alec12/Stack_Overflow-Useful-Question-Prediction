@@ -1,0 +1,106 @@
+library(tidyverse)
+library(tm)
+library(tm.plugin.webmining)
+library(rJava)
+library(SnowballC)
+library(wordcloud)
+library(MASS)
+library(caTools)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(caret)
+library(ranger)
+library(ROCR)
+library(yardstick)
+
+#Load File
+stack = read.csv("ggplot2questions2018.csv", stringsAsFactors=FALSE)
+
+str(stack)
+# Convert Score into factors 
+stack$Useful = as.factor(as.numeric(stack$Score >= 1))
+table(stack$Useful)
+str(stack)
+head(stack)
+
+##Cleaning Process##
+
+# Step 1: Convert question data to a "corpus"
+title_corpus = Corpus(VectorSource(stack$Title))
+body_corpus = Corpus(VectorSource(stack$Body))
+  #Test
+  title_corpus[[1]]
+  strwrap(title_corpus[[1]])
+  body_corpus[[1]]
+  strwrap(body_corpus[[1]])
+
+# Step 2a: Clean title_corpus: convert to lower case
+title_corpus = tm_map(title_corpus, tolower)
+
+# Step 2b: clean punctuation
+title_corpus = tm_map(title_corpus, removePunctuation)
+
+# Step 2c: remove stopwords
+title_corpus = tm_map(title_corpus, removeWords, c("ggplot2", stopwords("english")))
+
+# Step 2d: stem document
+title_corpus = tm_map(title_corpus, stemDocument)
+
+  #Test
+  strwrap(title_corpus[[5]])
+
+# Step 2e: Create a fequencies matrix (rows are titles, columns are words)
+frequencies = DocumentTermMatrix(title_corpus)
+frequencies
+
+findFreqTerms(frequencies, lowfreq=20)
+sparse = removeSparseTerms(frequencies, 0.99)
+sparse
+
+titleTM = as.data.frame(as.matrix(sparse))
+colnames(titleTM) = make.names(colnames(titleTM))
+
+
+# Step 3a: Clean body_corpus: Remove html
+for(i in seq(1,6618)) {
+  body_corpus[[i]] = extractHTMLStrip(body_corpus[[i]])
+}
+  #Test 
+  strwrap(body_corpus[[55]])
+  strwrap(body_corpus[[100]])
+
+# Step 3b: change to lowercase
+body_corpus = tm_map(body_corpus, tolower)
+
+# Step 3c: clean punctuation
+body_corpus = tm_map(body_corpus, removePunctuation)
+
+# Step 3d: remove stopwords
+body_corpus = tm_map(body_corpus, removeWords, c("ggplot2", stopwords("english")))
+
+# Step 3e: stem document
+body_corpus = tm_map(body_corpus, stemDocument)
+
+# Step 3f: Create a fequencies matrix (rows are titles, columns are words)
+frequencies2 = DocumentTermMatrix(body_corpus)
+frequencies2
+
+    findFreqTerms(frequencies, lowfreq=20)
+    sparse2 = removeSparseTerms(frequencies2, 0.95)
+    sparse2
+
+bodyTM = as.data.frame(as.matrix(sparse2))
+colnames(bodyTM) = make.names(colnames(bodyTM))
+
+
+#Combine the corpus-body and corpus_title such that it specifies if
+#a word is from the title or body during the model building phase.
+#use cbind and attach a prefix to each word that is a column name in the data frame matrix.
+
+colnames(bodyTM) <- paste("b", colnames(bodyTM), sep = "_")
+colnames(titleTM) <- paste("t", colnames(titleTM), sep = "_")
+
+UltimateTM <- cbind(bodyTM, titleTM)
+UltimateTM$Useful = stack$Useful
